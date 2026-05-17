@@ -1,417 +1,1612 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<link rel="preconnect" href="https://fonts.googleapis.com"/>
-<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@700;900&family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet"/>
-<title>Away Game — Christian Parent’s Playbook</title>
-<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
-<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#2C6E49">
+<title>Loop</title>
+
+<!-- ============================================================
+     FIREBASE CONFIG — REPLACE THIS BLOCK WITH YOUR PROJECT CONFIG
+     Go to: Firebase Console → Your Project → Project Settings → Web App
+     ============================================================ -->
+<script type="module">
+  import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
+  import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged, updateProfile } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
+  import { getFirestore, doc, setDoc, getDoc, collection, addDoc, updateDoc, deleteDoc, onSnapshot, query, where, orderBy, serverTimestamp, arrayUnion } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+
+  const firebaseConfig = {
+    apiKey: "YOUR_API_KEY",
+    authDomain: "YOUR_PROJECT.firebaseapp.com",
+    projectId: "YOUR_PROJECT_ID",
+    storageBucket: "YOUR_PROJECT.appspot.com",
+    messagingSenderId: "YOUR_SENDER_ID",
+    appId: "YOUR_APP_ID"
+  };
+  // ============================================================
+
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  const db = getFirestore(app);
+
+  // ── State ─────────────────────────────────────────────────────────────────
+  let currentUser = null;
+  let currentHousehold = null;
+  let householdMembers = [];
+  let tasks = [];
+  let stockItems = [];
+  let unsubTasks = null;
+  let unsubStock = null;
+  let activeTab = 'home';
+
+  // ── Preset Packs ──────────────────────────────────────────────────────────
+  const PRESET_PACKS = {
+    'new-parents': {
+      label: 'New Parents', icon: '👶',
+      tasks: [
+        { title: 'Check diaper supply', type: 'weekly' },
+        { title: 'Schedule pediatrician appointment', type: 'monthly' },
+        { title: 'Baby laundry', type: 'weekly' },
+        { title: 'Restock formula / baby food', type: 'weekly' },
+        { title: 'Prepare bottles', type: 'daily' },
+      ]
+    },
+    'school-kids': {
+      label: 'School Age Kids', icon: '🎒',
+      tasks: [
+        { title: 'Check for permission slips', type: 'weekly' },
+        { title: 'Pack school lunches', type: 'daily' },
+        { title: 'Restock school supplies', type: 'monthly' },
+        { title: 'Homework check-in', type: 'daily' },
+        { title: 'Wash PE clothes', type: 'weekly' },
+      ]
+    },
+    'pets': {
+      label: 'Pet Owners', icon: '🐾',
+      tasks: [
+        { title: 'Restock pet food', type: 'weekly' },
+        { title: 'Schedule vet appointment', type: 'monthly' },
+        { title: 'Flea / heartworm medication', type: 'monthly' },
+        { title: 'Clean water bowl', type: 'daily' },
+        { title: 'Grooming appointment', type: 'monthly' },
+      ]
+    },
+    'apartment': {
+      label: 'Apartment', icon: '🏢',
+      tasks: [
+        { title: 'Take trash out', type: 'weekly' },
+        { title: 'Laundry', type: 'weekly' },
+        { title: 'Refill hand soap', type: 'monthly' },
+        { title: 'Restock toilet paper', type: 'weekly' },
+        { title: 'Clean bathroom', type: 'weekly' },
+      ]
+    },
+    'homeowners': {
+      label: 'Homeowners', icon: '🏡',
+      tasks: [
+        { title: 'Replace HVAC filter', type: 'monthly' },
+        { title: 'Yard / lawn maintenance', type: 'weekly' },
+        { title: 'Check gutters', type: 'seasonal' },
+        { title: 'Schedule service calls', type: 'seasonal' },
+        { title: 'Restock cleaning supplies', type: 'monthly' },
+      ]
+    },
+  };
+
+  const STOCK_DEFAULTS = [
+    'Toilet paper', 'Paper towels', 'Dish soap', 'Hand soap',
+    'Laundry detergent', 'Trash bags', 'Coffee', 'Bread',
+  ];
+
+  // ── Utilities ─────────────────────────────────────────────────────────────
+  function generateCode() {
+    return Math.random().toString(36).substring(2, 8).toUpperCase();
+  }
+
+  function show(id) {
+    document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+    const el = document.getElementById(id);
+    if (el) el.classList.add('active');
+  }
+
+  function toast(msg, type = 'info') {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.className = `toast toast-${type} show`;
+    setTimeout(() => t.classList.remove('show'), 3000);
+  }
+
+  function setLoading(btn, loading) {
+    if (loading) {
+      btn.dataset.orig = btn.textContent;
+      btn.textContent = 'Loading…';
+      btn.disabled = true;
+    } else {
+      btn.textContent = btn.dataset.orig || btn.textContent;
+      btn.disabled = false;
+    }
+  }
+
+  function formatDate(date) {
+    if (!date) return '';
+    const d = date.toDate ? date.toDate() : new Date(date);
+    const today = new Date();
+    const tomorrow = new Date(today); tomorrow.setDate(today.getDate() + 1);
+    if (d.toDateString() === today.toDateString()) return 'Today';
+    if (d.toDateString() === tomorrow.toDateString()) return 'Tomorrow';
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  }
+
+  function isToday(date) {
+    if (!date) return false;
+    const d = date.toDate ? date.toDate() : new Date(date);
+    return d.toDateString() === new Date().toDateString();
+  }
+
+  function isUpcoming(date) {
+    if (!date) return false;
+    const d = date.toDate ? date.toDate() : new Date(date);
+    const now = new Date();
+    const week = new Date(now); week.setDate(now.getDate() + 7);
+    return d > now && d <= week;
+  }
+
+  function getMemberName(uid) {
+    const m = householdMembers.find(m => m.uid === uid);
+    return m ? m.displayName : 'Someone';
+  }
+
+  function getInitials(name) {
+    return name ? name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2) : '?';
+  }
+
+  // ── Auth ──────────────────────────────────────────────────────────────────
+  window.doSignUp = async () => {
+    const name = document.getElementById('su-name').value.trim();
+    const email = document.getElementById('su-email').value.trim();
+    const pass = document.getElementById('su-pass').value;
+    const btn = document.getElementById('su-btn');
+    if (!name || !email || !pass) return toast('Fill in all fields', 'error');
+    if (pass.length < 6) return toast('Password must be at least 6 characters', 'error');
+    setLoading(btn, true);
+    try {
+      const cred = await createUserWithEmailAndPassword(auth, email, pass);
+      await updateProfile(cred.user, { displayName: name });
+      await setDoc(doc(db, 'users', cred.user.uid), {
+        displayName: name, email, createdAt: serverTimestamp(), householdId: null
+      });
+    } catch (e) {
+      toast(e.message.replace('Firebase: ', '').replace(/\(.*\)/, '').trim(), 'error');
+    }
+    setLoading(btn, false);
+  };
+
+  window.doSignIn = async () => {
+    const email = document.getElementById('si-email').value.trim();
+    const pass = document.getElementById('si-pass').value;
+    const btn = document.getElementById('si-btn');
+    if (!email || !pass) return toast('Fill in all fields', 'error');
+    setLoading(btn, true);
+    try {
+      await signInWithEmailAndPassword(auth, email, pass);
+    } catch (e) {
+      toast('Invalid email or password', 'error');
+    }
+    setLoading(btn, false);
+  };
+
+  window.doSignOut = async () => {
+    if (unsubTasks) unsubTasks();
+    if (unsubStock) unsubStock();
+    currentHousehold = null;
+    householdMembers = [];
+    tasks = [];
+    stockItems = [];
+    await signOut(auth);
+  };
+
+  window.showSignUp = () => {
+    document.getElementById('auth-signin').classList.add('hidden');
+    document.getElementById('auth-signup').classList.remove('hidden');
+  };
+
+  window.showSignIn = () => {
+    document.getElementById('auth-signup').classList.add('hidden');
+    document.getElementById('auth-signin').classList.remove('hidden');
+  };
+
+  // ── Household ─────────────────────────────────────────────────────────────
+  window.createHousehold = async () => {
+    const name = document.getElementById('hh-name').value.trim();
+    const btn = document.getElementById('hh-create-btn');
+    if (!name) return toast('Give your household a name', 'error');
+    setLoading(btn, true);
+    try {
+      const code = generateCode();
+      const hhRef = doc(collection(db, 'households'));
+      await setDoc(hhRef, {
+        name, inviteCode: code,
+        createdBy: currentUser.uid,
+        members: [currentUser.uid],
+        createdAt: serverTimestamp()
+      });
+      await setDoc(doc(db, 'users', currentUser.uid), { householdId: hhRef.id }, { merge: true });
+      currentHousehold = { id: hhRef.id, name, inviteCode: code, members: [currentUser.uid] };
+      show('screen-packs');
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+    setLoading(btn, false);
+  };
+
+  window.joinHousehold = async () => {
+    const code = document.getElementById('join-code').value.trim().toUpperCase();
+    const btn = document.getElementById('join-btn');
+    if (!code) return toast('Enter an invite code', 'error');
+    setLoading(btn, true);
+    try {
+      const q = query(collection(db, 'households'), where('inviteCode', '==', code));
+      const snap = await new Promise((res, rej) => {
+        const unsub = onSnapshot(q, res, rej);
+        setTimeout(unsub, 5000);
+      });
+      if (snap.empty) { toast('Code not found', 'error'); setLoading(btn, false); return; }
+      const hhDoc = snap.docs[0];
+      const hh = { id: hhDoc.id, ...hhDoc.data() };
+      await updateDoc(doc(db, 'households', hh.id), { members: arrayUnion(currentUser.uid) });
+      await setDoc(doc(db, 'users', currentUser.uid), { householdId: hh.id }, { merge: true });
+      currentHousehold = hh;
+      await loadApp();
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+    setLoading(btn, false);
+  };
+
+  // ── Preset Packs ──────────────────────────────────────────────────────────
+  let selectedPacks = new Set();
+
+  window.togglePack = (key) => {
+    const el = document.getElementById(`pack-${key}`);
+    if (selectedPacks.has(key)) {
+      selectedPacks.delete(key);
+      el.classList.remove('selected');
+    } else {
+      selectedPacks.add(key);
+      el.classList.add('selected');
+    }
+  };
+
+  window.confirmPacks = async () => {
+    const btn = document.getElementById('packs-btn');
+    setLoading(btn, true);
+    try {
+      for (const key of selectedPacks) {
+        const pack = PRESET_PACKS[key];
+        for (const t of pack.tasks) {
+          await addDoc(collection(db, 'tasks'), {
+            householdId: currentHousehold.id,
+            title: t.title,
+            type: t.type,
+            isComplete: false,
+            assignedTo: null,
+            dueDate: null,
+            notes: '',
+            createdBy: currentUser.uid,
+            createdAt: serverTimestamp()
+          });
+        }
+      }
+      // Add default stock items
+      for (const name of STOCK_DEFAULTS) {
+        await addDoc(collection(db, 'stock'), {
+          householdId: currentHousehold.id,
+          name, status: 'ok',
+          updatedBy: currentUser.uid,
+          updatedAt: serverTimestamp()
+        });
+      }
+      await loadApp();
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+    setLoading(btn, false);
+  };
+
+  window.skipPacks = async () => {
+    // Still add stock defaults
+    for (const name of STOCK_DEFAULTS) {
+      await addDoc(collection(db, 'stock'), {
+        householdId: currentHousehold.id,
+        name, status: 'ok',
+        updatedBy: currentUser.uid,
+        updatedAt: serverTimestamp()
+      });
+    }
+    await loadApp();
+  };
+
+  // ── App Load ──────────────────────────────────────────────────────────────
+  async function loadApp() {
+    show('screen-loading');
+    try {
+      // Load household
+      const hhSnap = await getDoc(doc(db, 'households', currentHousehold.id));
+      currentHousehold = { id: hhSnap.id, ...hhSnap.data() };
+
+      // Load members
+      householdMembers = [];
+      for (const uid of currentHousehold.members || []) {
+        const uSnap = await getDoc(doc(db, 'users', uid));
+        if (uSnap.exists()) householdMembers.push({ uid, ...uSnap.data() });
+      }
+
+      // Subscribe to tasks
+      if (unsubTasks) unsubTasks();
+      unsubTasks = onSnapshot(
+        query(collection(db, 'tasks'), where('householdId', '==', currentHousehold.id)),
+        snap => {
+          tasks = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+          renderCurrentTab();
+        }
+      );
+
+      // Subscribe to stock
+      if (unsubStock) unsubStock();
+      unsubStock = onSnapshot(
+        query(collection(db, 'stock'), where('householdId', '==', currentHousehold.id)),
+        snap => {
+          stockItems = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+          renderCurrentTab();
+        }
+      );
+
+      renderCurrentTab();
+      show('screen-app');
+    } catch (e) {
+      toast(e.message, 'error');
+      show('screen-household');
+    }
+  }
+
+  // ── Task Operations ────────────────────────────────────────────────────────
+  window.completeTask = async (id) => {
+    const el = document.getElementById(`task-${id}`);
+    if (el) el.classList.add('completing');
+    await updateDoc(doc(db, 'tasks', id), {
+      isComplete: true,
+      completedAt: serverTimestamp(),
+      completedBy: currentUser.uid
+    });
+  };
+
+  window.uncompleteTask = async (id) => {
+    await updateDoc(doc(db, 'tasks', id), {
+      isComplete: false, completedAt: null, completedBy: null
+    });
+  };
+
+  window.deleteTask = async (id) => {
+    closeModal();
+    await deleteDoc(doc(db, 'tasks', id));
+  };
+
+  window.assignTask = async (id, uid) => {
+    await updateDoc(doc(db, 'tasks', id), { assignedTo: uid || null });
+    closeModal();
+    toast(uid ? `Assigned to ${getMemberName(uid)}` : 'Unassigned', 'info');
+  };
+
+  // ── Add Task ──────────────────────────────────────────────────────────────
+  window.openAddTask = () => {
+    document.getElementById('add-title').value = '';
+    document.getElementById('add-type').value = 'one-time';
+    document.getElementById('add-due').value = '';
+    document.getElementById('add-notes').value = '';
+    document.getElementById('add-assign').innerHTML = `<option value="">Unassigned</option>` +
+      householdMembers.map(m => `<option value="${m.uid}">${m.displayName}</option>`).join('');
+    showModal('modal-add-task');
+  };
+
+  window.submitAddTask = async () => {
+    const title = document.getElementById('add-title').value.trim();
+    const type = document.getElementById('add-type').value;
+    const due = document.getElementById('add-due').value;
+    const notes = document.getElementById('add-notes').value.trim();
+    const assignedTo = document.getElementById('add-assign').value || null;
+    const btn = document.getElementById('add-task-btn');
+    if (!title) return toast('Task needs a name', 'error');
+    setLoading(btn, true);
+    try {
+      await addDoc(collection(db, 'tasks'), {
+        householdId: currentHousehold.id,
+        title, type, notes,
+        assignedTo,
+        dueDate: due ? new Date(due + 'T00:00:00') : null,
+        isComplete: false,
+        createdBy: currentUser.uid,
+        createdAt: serverTimestamp()
+      });
+      closeModal();
+      toast('Task added', 'success');
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+    setLoading(btn, false);
+  };
+
+  // ── Task Detail Modal ─────────────────────────────────────────────────────
+  window.openTaskDetail = (id) => {
+    const task = tasks.find(t => t.id === id);
+    if (!task) return;
+    const m = document.getElementById('modal-task-detail');
+    m.querySelector('.modal-title').textContent = task.title;
+    m.querySelector('.detail-type').textContent = task.type;
+    m.querySelector('.detail-due').textContent = task.dueDate ? formatDate(task.dueDate) : 'No due date';
+    m.querySelector('.detail-assigned').textContent = task.assignedTo ? getMemberName(task.assignedTo) : 'Unassigned';
+    m.querySelector('.detail-notes').textContent = task.notes || '—';
+    m.querySelector('.detail-status').textContent = task.isComplete
+      ? `Done by ${getMemberName(task.completedBy)}`
+      : 'Not done yet';
+
+    m.querySelector('.btn-complete-task').onclick = () => {
+      task.isComplete ? uncompleteTask(id) : completeTask(id);
+      closeModal();
+    };
+    m.querySelector('.btn-complete-task').textContent = task.isComplete ? 'Mark Incomplete' : 'Mark Done';
+    m.querySelector('.btn-delete-task').onclick = () => deleteTask(id);
+
+    // Assign buttons
+    const assignDiv = m.querySelector('.detail-assign-btns');
+    assignDiv.innerHTML = `<button class="assign-btn ${!task.assignedTo ? 'active' : ''}" onclick="assignTask('${id}', '')">No one</button>` +
+      householdMembers.map(mem =>
+        `<button class="assign-btn ${task.assignedTo === mem.uid ? 'active' : ''}" onclick="assignTask('${id}', '${mem.uid}')">${mem.displayName}</button>`
+      ).join('');
+
+    showModal('modal-task-detail');
+  };
+
+  // ── Stock ─────────────────────────────────────────────────────────────────
+  window.cycleStock = async (id) => {
+    const item = stockItems.find(s => s.id === id);
+    if (!item) return;
+    const cycle = { ok: 'low', low: 'restock', restock: 'ok' };
+    await updateDoc(doc(db, 'stock', id), {
+      status: cycle[item.status],
+      updatedBy: currentUser.uid,
+      updatedAt: serverTimestamp()
+    });
+  };
+
+  window.openAddStock = () => {
+    document.getElementById('add-stock-name').value = '';
+    showModal('modal-add-stock');
+  };
+
+  window.submitAddStock = async () => {
+    const name = document.getElementById('add-stock-name').value.trim();
+    const btn = document.getElementById('add-stock-btn');
+    if (!name) return toast('Enter an item name', 'error');
+    setLoading(btn, true);
+    try {
+      await addDoc(collection(db, 'stock'), {
+        householdId: currentHousehold.id,
+        name, status: 'ok',
+        updatedBy: currentUser.uid,
+        updatedAt: serverTimestamp()
+      });
+      closeModal();
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+    setLoading(btn, false);
+  };
+
+  window.deleteStock = async (id) => {
+    await deleteDoc(doc(db, 'stock', id));
+  };
+
+  // ── Export / Import ───────────────────────────────────────────────────────
+  window.exportData = () => {
+    const data = {
+      household: { name: currentHousehold.name, inviteCode: currentHousehold.inviteCode },
+      tasks: tasks.map(({ id, householdId, ...t }) => t),
+      stock: stockItems.map(({ id, householdId, ...s }) => s),
+      exportedAt: new Date().toISOString(),
+      exportedBy: currentUser.displayName
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `loop-export-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    toast('Export downloaded', 'success');
+  };
+
+  // ── Render ────────────────────────────────────────────────────────────────
+  function renderCurrentTab() {
+    if (activeTab === 'home') renderHome();
+    else if (activeTab === 'tasks') renderTasks();
+    else if (activeTab === 'stock') renderStock();
+    else if (activeTab === 'settings') renderSettings();
+  }
+
+  window.switchTab = (tab) => {
+    activeTab = tab;
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelector(`.tab-btn[data-tab="${tab}"]`).classList.add('active');
+    renderCurrentTab();
+  };
+
+  function taskCard(task, compact = false) {
+    const assigned = task.assignedTo ? getMemberName(task.assignedTo) : '';
+    const isMe = task.assignedTo === currentUser.uid;
+    const isPartner = task.assignedTo && task.assignedTo !== currentUser.uid;
+    return `
+      <div class="task-row ${task.isComplete ? 'task-done' : ''}" id="task-${task.id}">
+        <button class="task-check ${task.isComplete ? 'checked' : ''}"
+          onclick="event.stopPropagation(); ${task.isComplete ? `uncompleteTask('${task.id}')` : `completeTask('${task.id}')`}">
+          ${task.isComplete ? '✓' : ''}
+        </button>
+        <div class="task-body" onclick="openTaskDetail('${task.id}')">
+          <div class="task-title">${task.title}</div>
+          ${!compact ? `<div class="task-meta">
+            <span class="task-type-badge">${task.type}</span>
+            ${task.dueDate ? `<span class="task-due">${formatDate(task.dueDate)}</span>` : ''}
+            ${assigned ? `<span class="task-assigned ${isMe ? 'me' : 'partner'}">${isMe ? 'You' : assigned}</span>` : ''}
+          </div>` : ''}
+        </div>
+      </div>`;
+  }
+
+  function sectionEl(title, count, content, emptyMsg) {
+    return `
+      <div class="section">
+        <div class="section-header">
+          <span class="section-label">${title}</span>
+          ${count > 0 ? `<span class="section-count">${count}</span>` : ''}
+        </div>
+        ${content || `<p class="empty-msg">${emptyMsg}</p>`}
+      </div>`;
+  }
+
+  function renderHome() {
+    const incomplete = tasks.filter(t => !t.isComplete);
+    const todayTasks = incomplete.filter(t => t.type === 'daily' || (t.dueDate && isToday(t.dueDate)));
+    const upcoming = incomplete.filter(t => t.dueDate && isUpcoming(t.dueDate) && !isToday(t.dueDate));
+    const lowStock = stockItems.filter(s => s.status === 'low' || s.status === 'restock');
+    const waitingOn = incomplete.filter(t => t.assignedTo && t.assignedTo !== currentUser.uid);
+
+    const partner = householdMembers.find(m => m.uid !== currentUser.uid);
+    const content = document.getElementById('tab-content');
+    content.innerHTML = `
+      <div class="home-greeting">
+        <div class="greeting-text">
+          <h2>Hey, ${currentUser.displayName?.split(' ')[0]} 👋</h2>
+          <p>${currentHousehold.name}</p>
+        </div>
+        ${partner ? `<div class="partner-chip">
+          <div class="avatar">${getInitials(partner.displayName)}</div>
+          <span>${partner.displayName.split(' ')[0]}</span>
+        </div>` : `<div class="partner-chip invite" onclick="showInvite()">+ Invite partner</div>`}
+      </div>
+
+      ${sectionEl('Today', todayTasks.length,
+        todayTasks.length ? todayTasks.map(t => taskCard(t, true)).join('') : '',
+        '✨ All clear for today')}
+
+      ${sectionEl('Upcoming', upcoming.length,
+        upcoming.length ? upcoming.slice(0, 5).map(t => taskCard(t)).join('') : '',
+        'Nothing due this week')}
+
+      ${sectionEl('Low Stock', lowStock.length,
+        lowStock.length ? `<div class="stock-chips">${lowStock.map(s => `
+          <div class="stock-chip status-${s.status}" onclick="cycleStock('${s.id}')">
+            <span>${s.name}</span>
+            <span class="stock-dot"></span>
+          </div>`).join('')}</div>` : '',
+        'All stocked up 📦')}
+
+      ${sectionEl('Waiting On', waitingOn.length,
+        waitingOn.length ? waitingOn.map(t => taskCard(t, true)).join('') : '',
+        partner ? `${partner.displayName.split(' ')[0]} is all caught up` : 'No partner yet')}
+    `;
+  }
+
+  function renderTasks() {
+    const filter = document.getElementById('task-filter-val') || 'all';
+    const filterVal = typeof filter === 'string' ? filter : filter.value;
+    let filtered = filterVal === 'all' ? tasks : tasks.filter(t => t.type === filterVal);
+    const incomplete = filtered.filter(t => !t.isComplete);
+    const complete = filtered.filter(t => t.isComplete);
+
+    document.getElementById('tab-content').innerHTML = `
+      <div class="tasks-header">
+        <select id="task-filter-val" onchange="renderTasks()" class="filter-select">
+          <option value="all">All types</option>
+          <option value="daily">Daily</option>
+          <option value="weekly">Weekly</option>
+          <option value="monthly">Monthly</option>
+          <option value="seasonal">Seasonal</option>
+          <option value="one-time">One-time</option>
+        </select>
+        <button class="btn-add-task" onclick="openAddTask()">+ Add Task</button>
+      </div>
+      ${incomplete.length ? incomplete.map(t => taskCard(t)).join('') : '<p class="empty-msg">No open tasks 🎉</p>'}
+      ${complete.length ? `
+        <div class="section-header" style="margin-top:20px">
+          <span class="section-label">Completed</span>
+          <span class="section-count">${complete.length}</span>
+        </div>
+        ${complete.slice(0, 10).map(t => taskCard(t)).join('')}
+      ` : ''}
+    `;
+    if (filterVal !== 'all') {
+      document.getElementById('task-filter-val').value = filterVal;
+    }
+  }
+
+  function renderStock() {
+    const ok = stockItems.filter(s => s.status === 'ok');
+    const low = stockItems.filter(s => s.status === 'low');
+    const restock = stockItems.filter(s => s.status === 'restock');
+
+    document.getElementById('tab-content').innerHTML = `
+      <div class="stock-header">
+        <p class="stock-hint">Tap an item to cycle: OK → Low → Restock needed</p>
+        <button class="btn-add-task" onclick="openAddStock()">+ Add Item</button>
+      </div>
+      ${restock.length ? `<div class="section-header"><span class="section-label">Restock Needed</span><span class="section-count">${restock.length}</span></div>
+        ${restock.map(s => stockRow(s)).join('')}` : ''}
+      ${low.length ? `<div class="section-header" style="margin-top:16px"><span class="section-label">Running Low</span><span class="section-count">${low.length}</span></div>
+        ${low.map(s => stockRow(s)).join('')}` : ''}
+      ${ok.length ? `<div class="section-header" style="margin-top:16px"><span class="section-label">Stocked</span></div>
+        ${ok.map(s => stockRow(s)).join('')}` : ''}
+      ${!stockItems.length ? '<p class="empty-msg">Add items to track 📦</p>' : ''}
+    `;
+  }
+
+  function stockRow(item) {
+    return `<div class="stock-row" onclick="cycleStock('${item.id}')">
+      <div class="stock-status-dot status-${item.status}"></div>
+      <span class="stock-name">${item.name}</span>
+      <span class="stock-label-text">${item.status === 'ok' ? 'OK' : item.status === 'low' ? 'Low' : 'Need'}</span>
+      <button class="stock-delete" onclick="event.stopPropagation(); deleteStock('${item.id}')">×</button>
+    </div>`;
+  }
+
+  function renderSettings() {
+    document.getElementById('tab-content').innerHTML = `
+      <div class="settings-section">
+        <div class="settings-label">Household</div>
+        <div class="settings-card">
+          <div class="settings-row">
+            <span>Name</span><span class="settings-val">${currentHousehold.name}</span>
+          </div>
+          <div class="settings-row">
+            <span>Invite Code</span>
+            <span class="settings-val invite-code" onclick="copyInvite()">${currentHousehold.inviteCode} 📋</span>
+          </div>
+        </div>
+      </div>
+      <div class="settings-section">
+        <div class="settings-label">Members</div>
+        <div class="settings-card">
+          ${householdMembers.map(m => `
+            <div class="settings-row">
+              <div style="display:flex;align-items:center;gap:10px">
+                <div class="avatar">${getInitials(m.displayName)}</div>
+                <span>${m.displayName}</span>
+              </div>
+              ${m.uid === currentUser.uid ? '<span class="settings-val">You</span>' : ''}
+            </div>`).join('')}
+        </div>
+      </div>
+      <div class="settings-section">
+        <div class="settings-label">Data</div>
+        <div class="settings-card">
+          <div class="settings-row" onclick="exportData()" style="cursor:pointer">
+            <span>Export household data</span><span class="settings-val">↓</span>
+          </div>
+        </div>
+      </div>
+      <div class="settings-section">
+        <div class="settings-label">Account</div>
+        <div class="settings-card">
+          <div class="settings-row">
+            <span>Signed in as</span><span class="settings-val">${currentUser.email}</span>
+          </div>
+        </div>
+      </div>
+      <button class="btn-signout" onclick="doSignOut()">Sign Out</button>
+      <p class="app-version">Loop · Your household, together</p>
+    `;
+  }
+
+  window.copyInvite = () => {
+    navigator.clipboard.writeText(currentHousehold.inviteCode);
+    toast('Invite code copied!', 'success');
+  };
+
+  window.showInvite = () => {
+    toast(`Share this code: ${currentHousehold.inviteCode}`, 'info');
+  };
+
+  // ── Modals ────────────────────────────────────────────────────────────────
+  function showModal(id) {
+    document.getElementById(id).classList.add('open');
+    document.getElementById('modal-backdrop').classList.add('open');
+  }
+  window.closeModal = () => {
+    document.querySelectorAll('.modal').forEach(m => m.classList.remove('open'));
+    document.getElementById('modal-backdrop').classList.remove('open');
+  };
+
+  // ── Auth State ────────────────────────────────────────────────────────────
+  onAuthStateChanged(auth, async (user) => {
+    if (!user) {
+      currentUser = null;
+      show('screen-auth');
+      return;
+    }
+    currentUser = user;
+    const uSnap = await getDoc(doc(db, 'users', user.uid));
+    const userData = uSnap.exists() ? uSnap.data() : {};
+    if (userData.householdId) {
+      currentHousehold = { id: userData.householdId };
+      await loadApp();
+    } else {
+      show('screen-household');
+    }
+  });
+
+</script>
+
 <style>
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body { background: #f8f9fa; font-family: 'DM Sans', system-ui, sans-serif; color: #1a1a1a; line-height: 1.6; }
-button { cursor: pointer; }
-.progress-bar { height: 10px; background: #e9ecef; border-radius: 9999px; overflow: hidden; }
-.progress-fill { height: 100%; transition: width 0.5s ease; }
-.team-card { background: #fff; border: 1px solid #dee2e6; border-radius: 16px; padding: 20px; box-shadow: 0 4px 15px rgba(0,0,0,0.06); }
-.delete-btn { background: #fee2e2; color: #ef4444; border: none; width: 32px; height: 32px; border-radius: 8px; font-size: 18px; }
+  /* ── Reset & Base ─────────────────────────────────────────────────── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --sage: #2C6E49;
+    --sage-light: #3D8B5E;
+    --sage-pale: #E8F5EE;
+    --orange: #E8763A;
+    --orange-pale: #FEF0E7;
+    --cream: #FAF8F5;
+    --surface: #FFFFFF;
+    --border: #EDE9E4;
+    --text: #1A1A1A;
+    --text-muted: #6B7280;
+    --text-light: #9CA3AF;
+    --red: #DC2626;
+    --red-pale: #FEE2E2;
+    --yellow: #D97706;
+    --yellow-pale: #FEF3C7;
+    --radius: 14px;
+    --radius-sm: 8px;
+    --shadow: 0 2px 12px rgba(0,0,0,0.07);
+    --shadow-lg: 0 8px 32px rgba(0,0,0,0.12);
+    --font: 'Georgia', serif;
+    --font-ui: -apple-system, 'Helvetica Neue', sans-serif;
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  html, body {
+    height: 100%; width: 100%;
+    background: var(--cream);
+    color: var(--text);
+    font-family: var(--font-ui);
+    font-size: 16px;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+
+  /* ── Screens ─────────────────────────────────────────────────────── */
+  .screen {
+    position: fixed; inset: 0;
+    display: none; flex-direction: column;
+    background: var(--cream);
+    overflow: hidden;
+  }
+  .screen.active { display: flex; }
+
+  /* ── Auth Screen ─────────────────────────────────────────────────── */
+  #screen-auth {
+    background: linear-gradient(160deg, #1a3d2b 0%, #2C6E49 50%, #3a8c60 100%);
+    justify-content: flex-end;
+    padding: 0;
+  }
+
+  .auth-hero {
+    flex: 1;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    color: white; text-align: center;
+    padding: 40px 24px 20px;
+  }
+
+  .auth-logo {
+    font-family: var(--font);
+    font-size: 52px;
+    font-weight: bold;
+    letter-spacing: -1px;
+    margin-bottom: 8px;
+    text-shadow: 0 2px 16px rgba(0,0,0,0.2);
+  }
+
+  .auth-tagline {
+    font-size: 15px;
+    opacity: 0.8;
+    font-style: italic;
+    letter-spacing: 0.3px;
+  }
+
+  .auth-sheet {
+    background: var(--surface);
+    border-radius: 28px 28px 0 0;
+    padding: 28px 24px calc(28px + var(--safe-bottom));
+    box-shadow: 0 -4px 30px rgba(0,0,0,0.15);
+  }
+
+  .auth-tab-row {
+    display: flex; gap: 4px;
+    background: var(--cream);
+    border-radius: 12px;
+    padding: 4px;
+    margin-bottom: 24px;
+  }
+
+  .auth-tab {
+    flex: 1; padding: 10px;
+    border: none; background: transparent;
+    border-radius: 9px;
+    font-size: 14px; font-weight: 600;
+    color: var(--text-muted);
+    cursor: pointer; transition: all 0.2s;
+  }
+  .auth-tab.active {
+    background: var(--surface);
+    color: var(--sage);
+    box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+  }
+
+  .hidden { display: none !important; }
+
+  /* ── Form Elements ───────────────────────────────────────────────── */
+  .field { margin-bottom: 14px; }
+  .field label {
+    display: block; font-size: 12px; font-weight: 600;
+    color: var(--text-muted); margin-bottom: 6px;
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .field input, .field select, .field textarea {
+    width: 100%; padding: 13px 14px;
+    border: 1.5px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-size: 16px; color: var(--text);
+    background: var(--cream);
+    outline: none; transition: border-color 0.2s;
+    font-family: var(--font-ui);
+    -webkit-appearance: none;
+  }
+  .field input:focus, .field select:focus, .field textarea:focus {
+    border-color: var(--sage);
+    background: white;
+  }
+  .field textarea { resize: none; height: 72px; }
+
+  .btn-primary {
+    width: 100%; padding: 15px;
+    background: var(--sage);
+    color: white; border: none;
+    border-radius: var(--radius);
+    font-size: 16px; font-weight: 700;
+    cursor: pointer; transition: all 0.15s;
+    margin-top: 4px;
+    font-family: var(--font-ui);
+  }
+  .btn-primary:active { transform: scale(0.98); background: var(--sage-light); }
+  .btn-primary:disabled { opacity: 0.6; }
+
+  .btn-secondary {
+    width: 100%; padding: 13px;
+    background: transparent; color: var(--text-muted);
+    border: 1.5px solid var(--border);
+    border-radius: var(--radius);
+    font-size: 15px; font-weight: 500;
+    cursor: pointer; margin-top: 8px;
+    font-family: var(--font-ui);
+  }
+
+  .btn-text {
+    background: none; border: none;
+    color: var(--sage); font-size: 14px;
+    cursor: pointer; padding: 8px 0;
+    font-weight: 600;
+  }
+
+  /* ── Household Screen ────────────────────────────────────────────── */
+  .onboard-screen {
+    padding: 48px 24px 32px;
+    display: flex; flex-direction: column;
+    align-items: center; text-align: center;
+    overflow-y: auto;
+  }
+
+  .onboard-icon { font-size: 56px; margin-bottom: 16px; }
+  .onboard-title {
+    font-family: var(--font);
+    font-size: 26px; color: var(--text);
+    margin-bottom: 8px; font-weight: bold;
+  }
+  .onboard-sub {
+    color: var(--text-muted); font-size: 15px;
+    line-height: 1.5; margin-bottom: 32px;
+    max-width: 300px;
+  }
+
+  .onboard-form { width: 100%; max-width: 340px; text-align: left; }
+
+  .divider {
+    display: flex; align-items: center; gap: 12px;
+    margin: 20px 0; color: var(--text-light); font-size: 13px;
+  }
+  .divider::before, .divider::after {
+    content: ''; flex: 1; height: 1px; background: var(--border);
+  }
+
+  /* ── Preset Packs ────────────────────────────────────────────────── */
+  .packs-grid {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 10px; width: 100%; max-width: 400px;
+    margin-bottom: 24px;
+  }
+
+  .pack-card {
+    padding: 16px 12px;
+    background: var(--surface);
+    border: 2px solid var(--border);
+    border-radius: var(--radius);
+    text-align: center; cursor: pointer;
+    transition: all 0.2s;
+  }
+  .pack-card.selected {
+    border-color: var(--sage);
+    background: var(--sage-pale);
+  }
+  .pack-card .pack-icon { font-size: 28px; margin-bottom: 6px; }
+  .pack-card .pack-name { font-size: 13px; font-weight: 600; color: var(--text); }
+
+  /* ── App Shell ───────────────────────────────────────────────────── */
+  #screen-app { display: none; }
+  #screen-app.active { display: flex; flex-direction: column; }
+
+  .app-header {
+    background: var(--surface);
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+    flex-shrink: 0;
+  }
+
+  .app-header-logo {
+    font-family: var(--font);
+    font-size: 22px; font-weight: bold;
+    color: var(--sage);
+  }
+
+  .tab-content-wrap {
+    flex: 1; overflow-y: auto;
+    padding: 16px 16px 24px;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .tab-bar {
+    display: flex;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    padding: 8px 0 calc(8px + var(--safe-bottom));
+    flex-shrink: 0;
+  }
+
+  .tab-btn {
+    flex: 1; display: flex; flex-direction: column;
+    align-items: center; gap: 3px;
+    background: none; border: none;
+    color: var(--text-light);
+    font-size: 10px; font-weight: 600;
+    cursor: pointer; padding: 6px 0;
+    transition: color 0.15s;
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .tab-btn .tab-icon { font-size: 20px; }
+  .tab-btn.active { color: var(--sage); }
+
+  /* ── Home Screen ─────────────────────────────────────────────────── */
+  .home-greeting {
+    display: flex; align-items: center;
+    justify-content: space-between;
+    margin-bottom: 20px;
+    background: linear-gradient(135deg, var(--sage) 0%, var(--sage-light) 100%);
+    border-radius: var(--radius);
+    padding: 18px 16px;
+    color: white;
+  }
+
+  .greeting-text h2 {
+    font-size: 20px; font-weight: 700; margin-bottom: 2px;
+  }
+  .greeting-text p { font-size: 13px; opacity: 0.75; }
+
+  .partner-chip {
+    display: flex; align-items: center; gap: 8px;
+    background: rgba(255,255,255,0.18);
+    border-radius: 24px; padding: 6px 12px 6px 6px;
+    font-size: 13px; font-weight: 600; color: white;
+    cursor: pointer;
+  }
+  .partner-chip.invite {
+    padding: 8px 14px;
+    border: 1.5px dashed rgba(255,255,255,0.5);
+  }
+
+  .avatar {
+    width: 32px; height: 32px;
+    border-radius: 50%;
+    background: var(--sage);
+    color: white;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 700;
+    flex-shrink: 0;
+  }
+
+  /* ── Sections ────────────────────────────────────────────────────── */
+  .section { margin-bottom: 20px; }
+
+  .section-header {
+    display: flex; align-items: center; gap: 8px;
+    margin-bottom: 8px;
+  }
+
+  .section-label {
+    font-size: 12px; font-weight: 700;
+    color: var(--text-muted);
+    text-transform: uppercase; letter-spacing: 0.7px;
+  }
+
+  .section-count {
+    background: var(--sage);
+    color: white; font-size: 11px; font-weight: 700;
+    padding: 1px 7px; border-radius: 20px;
+  }
+
+  .empty-msg {
+    color: var(--text-light); font-size: 14px;
+    padding: 14px 0; font-style: italic;
+  }
+
+  /* ── Task Rows ───────────────────────────────────────────────────── */
+  .task-row {
+    display: flex; align-items: flex-start; gap: 12px;
+    background: var(--surface);
+    border-radius: var(--radius-sm);
+    padding: 12px 14px;
+    margin-bottom: 6px;
+    border: 1px solid var(--border);
+    transition: all 0.2s;
+  }
+  .task-row.task-done { opacity: 0.5; }
+  .task-row.completing { transform: scale(0.98); opacity: 0.7; }
+
+  .task-check {
+    width: 24px; height: 24px;
+    border-radius: 50%;
+    border: 2px solid var(--border);
+    background: none; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; color: white;
+    flex-shrink: 0; transition: all 0.15s;
+    margin-top: 1px;
+  }
+  .task-check.checked { background: var(--sage); border-color: var(--sage); }
+  .task-check:active { transform: scale(0.9); }
+
+  .task-body { flex: 1; cursor: pointer; min-width: 0; }
+  .task-title {
+    font-size: 15px; font-weight: 500; color: var(--text);
+    line-height: 1.3;
+  }
+  .task-done .task-title { text-decoration: line-through; }
+
+  .task-meta {
+    display: flex; flex-wrap: wrap; gap: 6px;
+    margin-top: 6px;
+  }
+
+  .task-type-badge {
+    font-size: 11px; font-weight: 600;
+    background: var(--cream);
+    color: var(--text-muted);
+    padding: 2px 8px; border-radius: 20px;
+    border: 1px solid var(--border);
+    text-transform: capitalize;
+  }
+
+  .task-due {
+    font-size: 11px; color: var(--orange);
+    font-weight: 600;
+  }
+
+  .task-assigned {
+    font-size: 11px; font-weight: 600;
+    padding: 2px 8px; border-radius: 20px;
+  }
+  .task-assigned.me { background: var(--sage-pale); color: var(--sage); }
+  .task-assigned.partner { background: var(--orange-pale); color: var(--orange); }
+
+  /* ── Stock ───────────────────────────────────────────────────────── */
+  .stock-chips {
+    display: flex; flex-wrap: wrap; gap: 8px;
+    padding: 4px 0;
+  }
+  .stock-chip {
+    display: flex; align-items: center; gap: 6px;
+    padding: 8px 12px; border-radius: 24px;
+    font-size: 13px; font-weight: 600;
+    cursor: pointer; transition: all 0.15s;
+    border: 1.5px solid transparent;
+  }
+  .stock-chip.status-low {
+    background: var(--yellow-pale); color: var(--yellow);
+    border-color: #FDE68A;
+  }
+  .stock-chip.status-restock {
+    background: var(--red-pale); color: var(--red);
+    border-color: #FECACA;
+  }
+  .stock-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+
+  .stock-row {
+    display: flex; align-items: center; gap: 12px;
+    background: var(--surface);
+    border-radius: var(--radius-sm);
+    padding: 13px 14px;
+    margin-bottom: 6px;
+    border: 1px solid var(--border);
+    cursor: pointer;
+  }
+  .stock-status-dot {
+    width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+  }
+  .status-ok .stock-status-dot, .stock-status-dot.status-ok { background: var(--sage); }
+  .status-low .stock-status-dot, .stock-status-dot.status-low { background: var(--yellow); }
+  .status-restock .stock-status-dot, .stock-status-dot.status-restock { background: var(--red); }
+  .stock-name { flex: 1; font-size: 15px; font-weight: 500; }
+  .stock-label-text { font-size: 12px; font-weight: 700; color: var(--text-muted); }
+  .stock-delete {
+    background: none; border: none;
+    color: var(--text-light); font-size: 18px;
+    cursor: pointer; padding: 2px 6px;
+  }
+  .stock-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+  .stock-hint { font-size: 12px; color: var(--text-muted); font-style: italic; }
+
+  /* ── Tasks Tab ───────────────────────────────────────────────────── */
+  .tasks-header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 14px; gap: 10px;
+  }
+  .filter-select {
+    flex: 1; padding: 9px 12px;
+    border: 1.5px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-size: 14px; color: var(--text);
+    background: var(--surface);
+    -webkit-appearance: none;
+  }
+  .btn-add-task {
+    background: var(--sage); color: white;
+    border: none; border-radius: var(--radius-sm);
+    padding: 9px 14px; font-size: 14px; font-weight: 700;
+    cursor: pointer; white-space: nowrap;
+  }
+
+  /* ── Settings ────────────────────────────────────────────────────── */
+  .settings-section { margin-bottom: 20px; }
+  .settings-label {
+    font-size: 12px; font-weight: 700;
+    color: var(--text-muted); text-transform: uppercase;
+    letter-spacing: 0.6px; margin-bottom: 8px; padding-left: 4px;
+  }
+  .settings-card {
+    background: var(--surface);
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    overflow: hidden;
+  }
+  .settings-row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border);
+    font-size: 15px;
+  }
+  .settings-row:last-child { border-bottom: none; }
+  .settings-val { color: var(--text-muted); font-size: 14px; }
+  .invite-code {
+    font-family: monospace; font-size: 16px;
+    color: var(--sage); font-weight: 700;
+    cursor: pointer;
+  }
+  .btn-signout {
+    width: 100%; padding: 14px;
+    background: var(--red-pale); color: var(--red);
+    border: 1.5px solid #FECACA;
+    border-radius: var(--radius);
+    font-size: 15px; font-weight: 700;
+    cursor: pointer; margin-bottom: 12px;
+    font-family: var(--font-ui);
+  }
+  .app-version {
+    text-align: center; color: var(--text-light);
+    font-size: 12px; font-style: italic; padding-bottom: 8px;
+  }
+
+  /* ── Modals ──────────────────────────────────────────────────────── */
+  #modal-backdrop {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.4);
+    z-index: 100; display: none;
+    backdrop-filter: blur(2px);
+  }
+  #modal-backdrop.open { display: block; }
+
+  .modal {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    background: var(--surface);
+    border-radius: 24px 24px 0 0;
+    padding: 20px 20px calc(20px + var(--safe-bottom));
+    z-index: 101;
+    transform: translateY(100%);
+    transition: transform 0.3s cubic-bezier(0.32, 0.72, 0, 1);
+    max-height: 85vh; overflow-y: auto;
+  }
+  .modal.open { transform: translateY(0); }
+
+  .modal-handle {
+    width: 36px; height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    margin: 0 auto 20px;
+  }
+
+  .modal-title {
+    font-size: 18px; font-weight: 700;
+    margin-bottom: 16px;
+    font-family: var(--font);
+  }
+
+  .modal-close {
+    position: absolute; top: 16px; right: 18px;
+    background: var(--cream); border: none;
+    color: var(--text-muted); font-size: 18px;
+    cursor: pointer; border-radius: 50%;
+    width: 32px; height: 32px;
+    display: flex; align-items: center; justify-content: center;
+  }
+
+  .detail-grid {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 12px; margin-bottom: 16px;
+  }
+  .detail-item { background: var(--cream); border-radius: 10px; padding: 10px 12px; }
+  .detail-item-label { font-size: 11px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 4px; }
+  .detail-item-val { font-size: 14px; font-weight: 600; color: var(--text); text-transform: capitalize; }
+
+  .detail-notes-block { background: var(--cream); border-radius: 10px; padding: 12px; margin-bottom: 16px; }
+  .detail-notes-label { font-size: 11px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 6px; }
+
+  .assign-row { margin-bottom: 16px; }
+  .assign-label { font-size: 12px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+  .detail-assign-btns { display: flex; flex-wrap: wrap; gap: 6px; }
+  .assign-btn {
+    padding: 7px 14px; border-radius: 20px;
+    border: 1.5px solid var(--border);
+    background: var(--cream); color: var(--text);
+    font-size: 13px; font-weight: 600; cursor: pointer;
+    font-family: var(--font-ui);
+  }
+  .assign-btn.active { background: var(--sage); color: white; border-color: var(--sage); }
+
+  .modal-action-row { display: flex; gap: 10px; margin-top: 4px; }
+  .btn-complete-task {
+    flex: 1; padding: 14px;
+    background: var(--sage); color: white;
+    border: none; border-radius: var(--radius);
+    font-size: 15px; font-weight: 700; cursor: pointer;
+    font-family: var(--font-ui);
+  }
+  .btn-delete-task {
+    padding: 14px 18px;
+    background: var(--red-pale); color: var(--red);
+    border: 1.5px solid #FECACA;
+    border-radius: var(--radius);
+    font-size: 15px; cursor: pointer;
+    font-family: var(--font-ui);
+  }
+
+  /* ── Toast ───────────────────────────────────────────────────────── */
+  .toast {
+    position: fixed; top: 20px; left: 50%; transform: translateX(-50%) translateY(-80px);
+    background: var(--text); color: white;
+    padding: 11px 20px; border-radius: 24px;
+    font-size: 14px; font-weight: 500;
+    z-index: 999; transition: transform 0.3s cubic-bezier(0.32,0.72,0,1);
+    white-space: nowrap; max-width: calc(100vw - 40px);
+  }
+  .toast.show { transform: translateX(-50%) translateY(0); }
+  .toast.toast-success { background: var(--sage); }
+  .toast.toast-error { background: var(--red); }
+
+  /* ── Loading ─────────────────────────────────────────────────────── */
+  #screen-loading {
+    align-items: center; justify-content: center;
+    background: var(--cream);
+  }
+  .loader-logo {
+    font-family: var(--font);
+    font-size: 42px; color: var(--sage);
+    font-weight: bold; margin-bottom: 16px;
+  }
+  .loader-dots {
+    display: flex; gap: 6px;
+  }
+  .loader-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--sage); opacity: 0.3;
+    animation: pulse 1.2s ease-in-out infinite;
+  }
+  .loader-dot:nth-child(2) { animation-delay: 0.2s; }
+  .loader-dot:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes pulse { 0%,100%{opacity:0.3} 50%{opacity:1} }
 </style>
 </head>
 <body>
-<div id="root"></div>
-<script type="text/babel" data-presets="react">
-const { useState } = React;
 
-// ─── STORAGE ──────────────────────────────────────────────────────────────────
-function load(key, fb) { try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fb; } catch { return fb; } }
-function save(key, val) { try { localStorage.setItem(key, JSON.stringify(val)); } catch {} }
-let _c = Date.now();
-function uid() { return "x" + (++_c).toString(36); }
+<!-- ── Toast ──────────────────────────────────────────────────────────────── -->
+<div id="toast" class="toast"></div>
 
-// ─── COLORS ───────────────────────────────────────────────────────────────────
-const C = {
-  bg0: "#f8f9fa", bg1: "#ffffff", bg2: "#f1f3f5", bg3: "#e9ecef",
-  border: "#dee2e6", borderHi: "#ff8c00",
-  text: "#1a1a1a", textSub: "#495057", textMuted: "#6c757d",
-  orange: "#ff8c00", green: "#00b36b"
-};
+<!-- ── Modal Backdrop ─────────────────────────────────────────────────────── -->
+<div id="modal-backdrop" onclick="closeModal()"></div>
 
-// ─── VIRTUES (Complete) ───────────────────────────────────────────────────────
-const VIRTUES = {
-  L: { key:"L", label:"Love", icon:"❤️", tagline:"Others-first in a me-first culture", color:"#ff4d4d", bg:"#fff0f0", border:"#ff8c00",
-       scoreMeaning: "0=Never • 1=Rarely • 2=Sometimes • 3=Consistently puts others first",
-       strong: ["Celebrates teammates' success", "Shows genuine kindness", "Puts team above self"],
-       weak:   ["Selfish on and off the field", "Dismisses or ignores teammates", "Only cheers for own highlights"],
-       develop: ["After each game, name one teammate who helped you win", "Do one act of encouragement before you leave the field", "Pray: 'Lord, help me love my teammates the way You love me'"] },
-  P: { key:"P", label:"Peace", icon:"☮️", tagline:"Calm anchored in Christ", color:"#00b36b", bg:"#f0fff4", border:"#ff8c00",
-       scoreMeaning: "0=Constant anxiety • 1=Occasional calm • 2=Usually calm • 3=Peace that guards the heart",
-       strong: ["Stays composed under pressure", "Calms teammates in tense moments", "Bounces back quickly from mistakes"],
-       weak:   ["Anxious or panicked when things go wrong", "Spreads tension to teammates", "Dwells on errors during play"],
-       develop: ["Practice three slow breaths before any big moment", "Write down one worry this week and give it to God in prayer", "Memorize Phil. 4:7 — let it anchor your pregame routine"] },
-  S: { key:"S", label:"Self-Control", icon:"🛡️", tagline:"Responding instead of reacting", color:"#0077cc", bg:"#f0f8ff", border:"#ff8c00",
-       scoreMeaning: "0=Frequent outbursts • 1=Improving • 2=Usually controlled • 3=Strong self-discipline",
-       strong: ["Responds to bad calls without blowing up", "Keeps emotions in check under provocation", "Leads by example in discipline"],
-       weak:   ["Frequent outbursts or meltdowns", "Argues with officials or coaches", "Lets frustration hurt performance"],
-       develop: ["Identify your #1 trigger — name it, then make a plan for it", "After a bad call, count to 5 before you react", "Ask a trusted teammate to hold you accountable this week"] },
-  G: { key:"G", label:"Gentleness", icon:"🌿", tagline:"Strength under control", color:"#9c4dff", bg:"#f8f0ff", border:"#ff8c00",
-       scoreMeaning: "0=Often harsh • 1=Sometimes gentle • 2=Usually gentle • 3=Strength under control",
-       strong: ["Encourages struggling teammates", "Competes hard without being cruel", "Uses words that build up, not tear down"],
-       weak:   ["Often harsh or cutting with words", "Intimidates or belittles others", "Confuses meanness with toughness"],
-       develop: ["Before criticizing a teammate, ask: 'Is this kind AND true?'", "Find one struggling player this week and intentionally encourage them", "Journal: where did strength AND gentleness show up together today?"] },
-  H: { key:"H", label:"Humility", icon:"🙏", tagline:"Playing from identity, not for identity", color:"#ff8c00", bg:"#fff8f0", border:"#ff8c00",
-       scoreMeaning: "0=Very prideful • 1=Occasional humility • 2=Growing humility • 3=Consistently humble",
-       strong: ["Credits teammates and coaches for success", "Accepts coaching without defensiveness", "Secure enough to celebrate others"],
-       weak:   ["Takes credit, deflects blame", "Gets defensive when corrected", "Needs to be the star"],
-       develop: ["After your next win, publicly credit two specific teammates", "When corrected by a coach, respond: 'Thank you, I'll work on that'", "Ask yourself: 'Am I playing TO prove something or FROM knowing who I am?'"] },
-  Gr: { key:"Gr", label:"Gratitude", icon:"🙌", tagline:"Thankful in all circumstances", color:"#ffaa00", bg:"#fffdf0", border:"#ff8c00",
-       scoreMeaning: "0=Very entitled • 1=Occasional thanks • 2=Usually grateful • 3=Thankful in all circumstances",
-       strong: ["Thanks coaches, officials, and opponents", "Grateful for the opportunity to compete", "Positive attitude win or lose"],
-       weak:   ["Entitled attitude about playing time or roles", "Rarely thanks others", "Complains about conditions, calls, or teammates"],
-       develop: ["Start every practice with one thing you're grateful for about this team", "Write a one-line thank-you to a coach or teammate this week", "After a loss, find three genuine things to be thankful for before you leave"] },
-  J: { key:"J", label:"Joy", icon:"🎉", tagline:"Delight that outlasts the score", color:"#ff6600", bg:"#fff4f0", border:"#ff8c00",
-       scoreMeaning: "0=Joy is gone • 1=Rare joy • 2=Usually joyful • 3=Consistent delight",
-       strong: ["Genuine enjoyment of the game", "Joy that doesn't depend on the scoreboard", "Lifts the energy of those around them"],
-       weak:   ["Only happy when winning", "Drains team energy with negativity", "Has lost the love of the game"],
-       develop: ["Recall why you first fell in love with this sport — write it down", "Find one moment in each practice to just enjoy the game", "Remind yourself: the scoreboard is temporary, but who you're becoming is not"] }
-};
+<!-- ── Modal: Add Task ────────────────────────────────────────────────────── -->
+<div id="modal-add-task" class="modal">
+  <div class="modal-handle"></div>
+  <button class="modal-close" onclick="closeModal()">✕</button>
+  <div class="modal-title">New Task</div>
+  <div class="field">
+    <label>What needs doing?</label>
+    <input id="add-title" type="text" placeholder="e.g. Replace HVAC filter">
+  </div>
+  <div class="field">
+    <label>Type</label>
+    <select id="add-type">
+      <option value="one-time">One-time</option>
+      <option value="daily">Daily</option>
+      <option value="weekly">Weekly</option>
+      <option value="monthly">Monthly</option>
+      <option value="seasonal">Seasonal</option>
+    </select>
+  </div>
+  <div class="field">
+    <label>Due Date (optional)</label>
+    <input id="add-due" type="date">
+  </div>
+  <div class="field">
+    <label>Assign To</label>
+    <select id="add-assign"></select>
+  </div>
+  <div class="field">
+    <label>Notes (optional)</label>
+    <textarea id="add-notes" placeholder="Any details…"></textarea>
+  </div>
+  <button class="btn-primary" id="add-task-btn" onclick="submitAddTask()">Add Task</button>
+</div>
 
-const SCORE_LABELS = ["Missing", "Emerging", "Developing", "Strong"];
+<!-- ── Modal: Task Detail ─────────────────────────────────────────────────── -->
+<div id="modal-task-detail" class="modal">
+  <div class="modal-handle"></div>
+  <button class="modal-close" onclick="closeModal()">✕</button>
+  <div class="modal-title"></div>
+  <div class="detail-grid">
+    <div class="detail-item">
+      <div class="detail-item-label">Type</div>
+      <div class="detail-item-val detail-type"></div>
+    </div>
+    <div class="detail-item">
+      <div class="detail-item-label">Due</div>
+      <div class="detail-item-val detail-due"></div>
+    </div>
+    <div class="detail-item">
+      <div class="detail-item-label">Assigned</div>
+      <div class="detail-item-val detail-assigned"></div>
+    </div>
+    <div class="detail-item">
+      <div class="detail-item-label">Status</div>
+      <div class="detail-item-val detail-status"></div>
+    </div>
+  </div>
+  <div class="detail-notes-block">
+    <div class="detail-notes-label">Notes</div>
+    <div class="detail-notes"></div>
+  </div>
+  <div class="assign-row">
+    <div class="assign-label">Assign To</div>
+    <div class="detail-assign-btns"></div>
+  </div>
+  <div class="modal-action-row">
+    <button class="btn-complete-task">Mark Done</button>
+    <button class="btn-delete-task">🗑</button>
+  </div>
+</div>
 
-// ─── HELPERS ──────────────────────────────────────────────────────────────────
-function getCombo(scores) {
-  const strong = Object.values(scores).filter(v => v === 3).length;
-  const developing = Object.values(scores).filter(v => v >= 2).length;
-  const avg = (Object.values(scores).reduce((a,b) => a + b, 0) / 7).toFixed(1);
+<!-- ── Modal: Add Stock ───────────────────────────────────────────────────── -->
+<div id="modal-add-stock" class="modal">
+  <div class="modal-handle"></div>
+  <button class="modal-close" onclick="closeModal()">✕</button>
+  <div class="modal-title">Track Item</div>
+  <div class="field">
+    <label>Item name</label>
+    <input id="add-stock-name" type="text" placeholder="e.g. Paper towels">
+  </div>
+  <button class="btn-primary" id="add-stock-btn" onclick="submitAddStock()">Add Item</button>
+</div>
 
-  if (strong >= 5) return { label: "Kingdom Competitor", icon: "🏆", desc: `Avg ${avg}/3`, color: C.orange, progress: 95 };
-  if (developing >= 6) return { label: "Strong Disciple", icon: "🌟", desc: `Avg ${avg}/3`, color: C.green, progress: 85 };
-  return { label: "Developing Disciple", icon: "🌱", desc: `Avg ${avg}/3`, color: "#fd7e14", progress: Math.round(developing / 7 * 100) };
-}
+<!-- ── Screen: Auth ───────────────────────────────────────────────────────── -->
+<div id="screen-auth" class="screen active">
+  <div class="auth-hero">
+    <div class="auth-logo">Loop</div>
+    <div class="auth-tagline">Running a home together.</div>
+  </div>
+  <div class="auth-sheet">
+    <div class="auth-tab-row">
+      <button class="auth-tab active" onclick="showSignIn(); this.parentElement.querySelectorAll('.auth-tab').forEach(t=>t.classList.remove('active')); this.classList.add('active')">Sign In</button>
+      <button class="auth-tab" onclick="showSignUp(); this.parentElement.querySelectorAll('.auth-tab').forEach(t=>t.classList.remove('active')); this.classList.add('active')">Create Account</button>
+    </div>
 
-function calculateTeamProgress(athletes) {
-  if (athletes.length === 0) return { avgScore: "0.0", strongPercent: 0, totalAthletes: 0 };
-  let totalScore = 0, totalStrong = 0;
-  const totalVirtues = athletes.length * 7;
+    <div id="auth-signin">
+      <div class="field">
+        <label>Email</label>
+        <input id="si-email" type="email" placeholder="you@example.com" autocomplete="email">
+      </div>
+      <div class="field">
+        <label>Password</label>
+        <input id="si-pass" type="password" placeholder="Password" autocomplete="current-password">
+      </div>
+      <button class="btn-primary" id="si-btn" onclick="doSignIn()">Sign In</button>
+    </div>
 
-  athletes.forEach(a => {
-    const scores = Object.values(a.scores || {});
-    totalScore += scores.reduce((a,b) => a + b, 0);
-    totalStrong += scores.filter(v => v === 3).length;
+    <div id="auth-signup" class="hidden">
+      <div class="field">
+        <label>Your name</label>
+        <input id="su-name" type="text" placeholder="First name or nickname" autocomplete="name">
+      </div>
+      <div class="field">
+        <label>Email</label>
+        <input id="su-email" type="email" placeholder="you@example.com" autocomplete="email">
+      </div>
+      <div class="field">
+        <label>Password</label>
+        <input id="su-pass" type="password" placeholder="At least 6 characters" autocomplete="new-password">
+      </div>
+      <button class="btn-primary" id="su-btn" onclick="doSignUp()">Create Account</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Screen: Loading ────────────────────────────────────────────────────── -->
+<div id="screen-loading" class="screen">
+  <div class="loader-logo">Loop</div>
+  <div class="loader-dots">
+    <div class="loader-dot"></div>
+    <div class="loader-dot"></div>
+    <div class="loader-dot"></div>
+  </div>
+</div>
+
+<!-- ── Screen: Household Setup ───────────────────────────────────────────── -->
+<div id="screen-household" class="screen">
+  <div class="onboard-screen">
+    <div class="onboard-icon">🏠</div>
+    <h1 class="onboard-title">Your household</h1>
+    <p class="onboard-sub">Give your home a name. You'll share this space with your partner.</p>
+    <div class="onboard-form">
+      <div class="field">
+        <label>Household name</label>
+        <input id="hh-name" type="text" placeholder="e.g. The Johnsons, Our Place">
+      </div>
+      <button class="btn-primary" id="hh-create-btn" onclick="createHousehold()">Create Household</button>
+      <div class="divider">or</div>
+      <div class="field">
+        <label>Partner's invite code</label>
+        <input id="join-code" type="text" placeholder="Enter 6-letter code" style="text-transform:uppercase;letter-spacing:2px;font-family:monospace;font-size:18px">
+      </div>
+      <button class="btn-primary" id="join-btn" onclick="joinHousehold()">Join Household</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Screen: Preset Packs ──────────────────────────────────────────────── -->
+<div id="screen-packs" class="screen">
+  <div class="onboard-screen">
+    <div class="onboard-icon">✨</div>
+    <h1 class="onboard-title">Pick your packs</h1>
+    <p class="onboard-sub">Choose what fits your home. You can always add or change tasks later.</p>
+    <div class="packs-grid">
+      <div class="pack-card" id="pack-new-parents" onclick="togglePack('new-parents')">
+        <div class="pack-icon">👶</div>
+        <div class="pack-name">New Parents</div>
+      </div>
+      <div class="pack-card" id="pack-school-kids" onclick="togglePack('school-kids')">
+        <div class="pack-icon">🎒</div>
+        <div class="pack-name">School Age Kids</div>
+      </div>
+      <div class="pack-card" id="pack-pets" onclick="togglePack('pets')">
+        <div class="pack-icon">🐾</div>
+        <div class="pack-name">Pet Owners</div>
+      </div>
+      <div class="pack-card" id="pack-apartment" onclick="togglePack('apartment')">
+        <div class="pack-icon">🏢</div>
+        <div class="pack-name">Apartment</div>
+      </div>
+      <div class="pack-card" id="pack-homeowners" onclick="togglePack('homeowners')">
+        <div class="pack-icon">🏡</div>
+        <div class="pack-name">Homeowners</div>
+      </div>
+    </div>
+    <div style="width:100%;max-width:400px">
+      <button class="btn-primary" id="packs-btn" onclick="confirmPacks()">Get Started →</button>
+      <button class="btn-secondary" onclick="skipPacks()">Skip — start with a blank slate</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Screen: App ────────────────────────────────────────────────────────── -->
+<div id="screen-app" class="screen">
+  <div class="app-header">
+    <div class="app-header-logo">Loop</div>
+    <div style="font-size:11px;color:var(--text-muted);font-weight:600;text-transform:uppercase;letter-spacing:0.5px" id="header-household-name"></div>
+  </div>
+  <div class="tab-content-wrap">
+    <div id="tab-content"></div>
+  </div>
+  <nav class="tab-bar">
+    <button class="tab-btn active" data-tab="home" onclick="switchTab('home')">
+      <span class="tab-icon">🏠</span>Home
+    </button>
+    <button class="tab-btn" data-tab="tasks" onclick="switchTab('tasks')">
+      <span class="tab-icon">✅</span>Tasks
+    </button>
+    <button class="tab-btn" data-tab="stock" onclick="switchTab('stock')">
+      <span class="tab-icon">📦</span>Stock
+    </button>
+    <button class="tab-btn" data-tab="settings" onclick="switchTab('settings')">
+      <span class="tab-icon">⚙️</span>Settings
+    </button>
+  </nav>
+</div>
+
+<script>
+  // Patch: update header household name after load
+  const origLoadApp = window.loadApp;
+  document.addEventListener('DOMContentLoaded', () => {
+    const nameEl = document.getElementById('header-household-name');
+    if (nameEl && window.currentHousehold) {
+      nameEl.textContent = window.currentHousehold.name;
+    }
   });
-
-  const avgScore = (totalScore / totalVirtues).toFixed(1);
-  const strongPercent = Math.round((totalStrong / totalVirtues) * 100);
-
-  return { avgScore, strongPercent, totalAthletes: athletes.length };
-}
-
-// ─── MODALS ───────────────────────────────────────────────────────────────────
-function Modal({title, onClose, children}) {
-  return (
-    <div style={{position:"fixed", inset:0, background:"rgba(0,0,0,0.75)", zIndex:500, display:"flex", alignItems:"center", justifyContent:"center"}} onClick={e=>e.target===e.currentTarget&&onClose()}>
-      <div style={{background:"#fff", borderRadius:16, width:"92%", maxWidth:720, maxHeight:"92vh", overflow:"hidden", boxShadow:"0 25px 70px rgba(0,0,0,0.25)"}}>
-        <div style={{padding:"18px 24px", borderBottom:"1px solid #dee2e6", display:"flex", justifyContent:"space-between", alignItems:"center"}}>
-          <span style={{fontSize:21, fontWeight:800, color:C.orange}}>{title}</span>
-          <button onClick={onClose} style={{fontSize:24, background:"none", border:"none", color:"#666"}}>✕</button>
-        </div>
-        <div style={{padding:24, overflowY:"auto", maxHeight:"78vh"}}>{children}</div>
-      </div>
-    </div>
-  );
-}
-
-function ConfirmDelete({name, onConfirm, onCancel}) {
-  return (
-    <Modal title="Delete Athlete" onClose={onCancel}>
-      <p style={{fontSize:16, marginBottom:24}}>Are you sure you want to permanently delete <strong>{name}</strong>?</p>
-      <p style={{color:"#ef4444", marginBottom:24}}>This cannot be undone.</p>
-      <div style={{display:"flex", gap:12, justifyContent:"flex-end"}}>
-        <button onClick={onCancel} style={{padding:"12px 24px", border:"none", background:"#ddd", borderRadius:10}}>Cancel</button>
-        <button onClick={onConfirm} style={{padding:"12px 28px", border:"none", background:"#ef4444", color:"#fff", borderRadius:10, fontWeight:700}}>Yes, Delete</button>
-      </div>
-    </Modal>
-  );
-}
-
-// ─── EDIT MODAL ───────────────────────────────────────────────────────────────
-function EditModal({person, onSave, onClose}) {
-  const [data, setData] = useState({...person, notes: person.notes || ""});
-
-  const updateScore = (key, value) => setData(prev => ({...prev, scores: {...prev.scores, [key]: Number(value)}}));
-
-  return (
-    <Modal title={data.id ? "Edit Athlete" : "Add New Athlete"} onClose={onClose}>
-      <input placeholder="Athlete Name *" value={data.name||""} onChange={e=>setData({...data,name:e.target.value})} style={{width:"100%", padding:14, fontSize:17, border:`2px solid ${C.border}`, borderRadius:10, marginBottom:12}} />
-      <input placeholder="Role / Team (optional)" value={data.role||""} onChange={e=>setData({...data,role:e.target.value})} style={{width:"100%", padding:14, fontSize:17, border:`2px solid ${C.border}`, borderRadius:10, marginBottom:20}} />
-
-      <div style={{marginBottom:20}}>
-        <div style={{fontWeight:700, color:C.orange, marginBottom:12}}>Score Each Virtue (0–3)</div>
-        {Object.values(VIRTUES).map(t => (
-          <div key={t.key} style={{marginBottom:16, padding:16, background:"#fff", border:`1px solid ${t.border}`, borderRadius:12}}>
-            <div style={{display:"flex", alignItems:"center", gap:12, marginBottom:8}}>
-              <span style={{fontSize:28}}>{t.icon}</span>
-              <div style={{flex:1, fontWeight:700, color:t.color}}>{t.label}</div>
-            </div>
-            <div style={{fontSize:13, color:"#555", marginBottom:10}}>{t.scoreMeaning}</div>
-            <div style={{display:"flex", gap:6}}>
-              {[0,1,2,3].map(n => (
-                <button key={n} onClick={()=>updateScore(t.key,n)} style={{flex:1, padding:"10px", borderRadius:8, background: data.scores[t.key]===n ? C.orange : "#f1f3f5", color: data.scores[t.key]===n ? "#fff" : "#333", fontWeight:700}}>
-                  {n}
-                </button>
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
-
-      <div style={{marginBottom:20}}>
-        <div style={{fontWeight:700, marginBottom:8}}>Notes / Observations / Prayers</div>
-        <textarea value={data.notes} onChange={e=>setData({...data, notes:e.target.value})} placeholder="Key moments, growth areas, specific prayers..." style={{width:"100%", height:130, padding:14, border:`2px solid ${C.border}`, borderRadius:10, resize:"vertical"}} />
-      </div>
-
-      <div style={{display:"flex", gap:12, justifyContent:"flex-end"}}>
-        <button onClick={onClose} style={{padding:"12px 24px", border:"none", background:"#ddd", borderRadius:10}}>Cancel</button>
-        <button onClick={()=>onSave(data)} style={{padding:"12px 32px", border:"none", background:C.orange, color:"#fff", borderRadius:10, fontWeight:700}} disabled={!data.name?.trim()}>💾 Save Changes</button>
-      </div>
-    </Modal>
-  );
-}
-
-// ─── PERSON DETAIL ────────────────────────────────────────────────────────────
-function PersonDetail({person, onClose, onEdit}) {
-  const [tab, setTab] = useState("assess");
-  const combo = getCombo(person.scores);
-
-  return (
-    <Modal title={person.name} onClose={onClose}>
-      <div style={{display:"flex", justifyContent:"space-between", marginBottom:20}}>
-        <div>
-          <div style={{fontSize:52}}>{combo.icon}</div>
-          <div style={{fontSize:24, fontWeight:800, color:combo.color}}>{combo.label}</div>
-        </div>
-        <button onClick={()=>{ onEdit(person); onClose(); }} style={{background:C.orange, color:"#fff", border:"none", padding:"10px 22px", borderRadius:10, fontWeight:700}}>✏ Edit</button>
-      </div>
-
-      <div style={{marginBottom:24}}>
-        <div style={{display:"flex", justifyContent:"space-between", fontSize:14, marginBottom:8}}>
-          <span>Character Progress</span>
-          <span>{combo.progress}%</span>
-        </div>
-        <div className="progress-bar">
-          <div className="progress-fill" style={{width: `${combo.progress}%`, background: combo.progress > 80 ? "linear-gradient(90deg,#00b36b,#34d399)" : combo.progress > 50 ? "linear-gradient(90deg,#ff8c00,#ffaa00)" : "#dc3545"}} />
-        </div>
-        <div style={{fontSize:13, color:C.textMuted, marginTop:6}}>
-          Last updated: {person.lastUpdated ? new Date(person.lastUpdated).toLocaleDateString() : "Never"}
-        </div>
-      </div>
-
-      <div style={{display:"flex", borderBottom:"3px solid #ff8c00", marginBottom:20}}>
-        {["assess","develop","notes"].map(t => (
-          <button key={t} onClick={()=>setTab(t)} style={{flex:1, padding:"14px", fontWeight:700, background:tab===t?C.orange:"#f1f3f5", color:tab===t?"#fff":"#333", border:"none"}}>
-            {t==="assess"?"📊 Profile":t==="develop"?"🛠 Develop":"📝 Notes"}
-          </button>
-        ))}
-      </div>
-
-      {tab==="assess" && Object.entries(person.scores).map(([k,v]) => {
-        const t = VIRTUES[k];
-        const showHas = v >= 2;
-        return (
-          <div key={k} style={{marginBottom:20, background:"#fff", border:`2px solid ${t.border}`, borderRadius:14, overflow:"hidden"}}>
-            <div style={{background:t.bg, padding:"16px 20px", display:"flex", alignItems:"center", gap:16}}>
-              <span style={{fontSize:42}}>{t.icon}</span>
-              <div style={{flex:1}}><div style={{fontSize:21, fontWeight:800, color:t.color}}>{t.label}</div></div>
-              <span style={{fontSize:18, fontWeight:700}}>{v}/3</span>
-            </div>
-            <div style={{padding:"20px"}}>
-              {(showHas ? t.strong : t.weak).map((s,i) => (
-                <div key={i} style={{marginBottom:6}}>{showHas?"→":"–"} {s}</div>
-              ))}
-            </div>
-          </div>
-        );
-      })}
-
-      {tab==="develop" && (
-        <div>
-          {Object.entries(person.scores).map(([k,v]) => {
-            const t = VIRTUES[k];
-            return (
-              <div key={k} style={{marginBottom:20, background:"#fff", border:`2px solid ${t.border}`, borderRadius:14, overflow:"hidden"}}>
-                <div style={{background:t.bg, padding:"14px 20px", display:"flex", alignItems:"center", gap:12}}>
-                  <span style={{fontSize:28}}>{t.icon}</span>
-                  <div style={{fontSize:18, fontWeight:800, color:t.color, flex:1}}>{t.label}</div>
-                  <span style={{fontSize:14, color:C.textMuted, background:"#fff", padding:"4px 10px", borderRadius:20, fontWeight:700}}>{SCORE_LABELS[v]}</span>
-                </div>
-                <div style={{padding:"16px 20px"}}>
-                  {t.develop.map((step,i) => (
-                    <div key={i} style={{display:"flex", gap:12, marginBottom:10, alignItems:"flex-start"}}>
-                      <span style={{background:C.orange, color:"#fff", borderRadius:"50%", width:22, height:22, display:"flex", alignItems:"center", justifyContent:"center", fontSize:12, fontWeight:800, flexShrink:0}}>{i+1}</span>
-                      <span style={{fontSize:14, color:C.text, lineHeight:1.5}}>{step}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {tab==="notes" && (
-        <div style={{background:"#fff", border:`1px solid ${C.border}`, borderRadius:12, padding:24, minHeight:200, whiteSpace:"pre-wrap", fontSize:15}}>
-          {person.notes || "No notes added yet."}
-        </div>
-      )}
-    </Modal>
-  );
-}
-
-const BLANK_ATHLETE = { id:"", name:"", role:"", notes:"", scores:{L:1,P:1,S:1,G:1,H:1,Gr:1,J:1}, lastUpdated: null };
-
-// ─── MAIN APP ─────────────────────────────────────────────────────────────────
-function App() {
-  const [tab, setTab] = useState("athletes");
-  const [athletes, setAthletes] = useState(() => load("awaygame_athletes_v1", []));
-  const [editing, setEditing] = useState(null);
-  const [viewing, setViewing] = useState(null);
-  const [deleteConfirm, setDeleteConfirm] = useState(null);
-
-  function saveAthlete(p) {
-    const updated = {...p, id: p.id || uid(), lastUpdated: Date.now()};
-    const next = p.id ? athletes.map(x => x.id === p.id ? updated : x) : [...athletes, updated];
-    setAthletes(next);
-    save("awaygame_athletes_v1", next);
-    setEditing(null);
-  }
-
-  function deleteAthlete(id) {
-    const next = athletes.filter(a => a.id !== id);
-    setAthletes(next);
-    save("awaygame_athletes_v1", next);
-    setDeleteConfirm(null);
-    if (viewing && viewing.id === id) setViewing(null);
-  }
-
-  const teamStats = calculateTeamProgress(athletes);
-
-  return (
-    <div style={{minHeight:"100vh", background:"#f8f9fa"}}>
-      {/* HEADER */}
-      <div style={{background:"#fff", borderBottom:"4px solid #ff8c00", padding:"0 24px", height:76, display:"flex", alignItems:"center", justifyContent:"space-between", boxShadow:"0 3px 12px rgba(0,0,0,0.1)"}}>
-        <div>
-          <div style={{fontFamily:"'Barlow Condensed',sans-serif", fontWeight:900, fontSize:32, letterSpacing:1.5, color:C.orange}}>AWAY GAME</div>
-          <div style={{fontSize:13, color:"#555"}}>Christian Parent’s Playbook</div>
-        </div>
-        <div style={{display:"flex", gap:8}}>
-          <button onClick={()=>setTab("athletes")} style={{padding:"10px 22px", borderRadius:10, background:tab==="athletes"?C.orange:"#fff", color:tab==="athletes"?"#fff":"#333", fontWeight:700, border:"2px solid #ff8c00"}}>👥 My Athletes</button>
-          <button onClick={()=>setTab("playbook")} style={{padding:"10px 22px", borderRadius:10, background:tab==="playbook"?C.orange:"#fff", color:tab==="playbook"?"#fff":"#333", fontWeight:700, border:"2px solid #ff8c00"}}>📖 The Playbook</button>
-        </div>
-      </div>
-
-      {tab === "athletes" && (
-        <div style={{padding:24}}>
-          {/* TEAM PROGRESS DASHBOARD */}
-          {athletes.length > 0 && (
-            <div className="team-card" style={{marginBottom:32}}>
-              <div style={{fontSize:20, fontWeight:800, marginBottom:16, color:C.orange}}>Team Progress Overview</div>
-              <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(180px, 1fr))", gap:20}}>
-                <div>
-                  <div style={{fontSize:13, color:C.textMuted}}>Team Average Score</div>
-                  <div style={{fontSize:32, fontWeight:800, color:C.orange}}>{teamStats.avgScore}</div>
-                  <div style={{fontSize:13}}>out of 3.0</div>
-                </div>
-                <div>
-                  <div style={{fontSize:13, color:C.textMuted}}>Strong Virtues</div>
-                  <div style={{fontSize:32, fontWeight:800, color: teamStats.strongPercent > 70 ? C.green : C.orange}}>{teamStats.strongPercent}%</div>
-                </div>
-                <div>
-                  <div style={{fontSize:13, color:C.textMuted}}>Athletes Tracked</div>
-                  <div style={{fontSize:32, fontWeight:800}}>{teamStats.totalAthletes}</div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:28}}>
-            <h1 style={{fontSize:28, fontWeight:800}}>My Athletes</h1>
-            <button onClick={()=>setEditing(BLANK_ATHLETE)} style={{background:C.orange, color:"#fff", border:"none", padding:"12px 28px", borderRadius:12, fontWeight:700}}>＋ Add Athlete</button>
-          </div>
-
-          {athletes.length === 0 ? (
-            <div style={{textAlign:"center", padding:"120px 20px", color:"#666"}}>
-              <div style={{fontSize:80}}>⚽️🏀🏈</div>
-              <div style={{fontSize:24, margin:"20px 0"}}>Start building your team’s character</div>
-              <button onClick={()=>setEditing(BLANK_ATHLETE)} style={{background:C.orange, color:"#fff", padding:"14px 36px", borderRadius:12, fontSize:17, fontWeight:700}}>Add Your First Athlete</button>
-            </div>
-          ) : (
-            <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(310px, 1fr))", gap:20}}>
-              {athletes.map(p => {
-                const combo = getCombo(p.scores);
-                return (
-                  <div key={p.id} style={{background:"#fff", border:`1px solid ${C.border}`, borderRadius:16, padding:22, boxShadow:"0 6px 20px rgba(0,0,0,0.07)", position:"relative"}}>
-                    <button 
-                      onClick={(e)=>{e.stopPropagation(); setDeleteConfirm(p);}} 
-                      className="delete-btn" 
-                      style={{position:"absolute", top:12, right:12}}
-                    >
-                      🗑
-                    </button>
-                    
-                    <div onClick={()=>setViewing(p)} style={{cursor:"pointer"}}>
-                      <div style={{fontSize:22, fontWeight:800, marginBottom:8}}>{p.name}</div>
-                      {p.role && <div style={{color:C.textSub, marginBottom:12}}>{p.role}</div>}
-                      
-                      <div style={{display:"flex", gap:8, flexWrap:"wrap", marginBottom:16}}>
-                        {Object.entries(p.scores).map(([k,v]) => (
-                          <div key={k} style={{background:VIRTUES[k].bg, padding:"6px 10px", borderRadius:8, fontSize:14}}>{VIRTUES[k].icon} {v}</div>
-                        ))}
-                      </div>
-
-                      <div style={{marginBottom:12}}>
-                        <div className="progress-bar">
-                          <div className="progress-fill" style={{width: `${combo.progress}%`, background: combo.progress > 80 ? "linear-gradient(90deg,#00b36b,#34d399)" : combo.progress > 50 ? "linear-gradient(90deg,#ff8c00,#ffaa00)" : "#dc3545"}} />
-                        </div>
-                      </div>
-
-                      <div style={{fontSize:13, color:C.textMuted}}>Last updated: {p.lastUpdated ? new Date(p.lastUpdated).toLocaleDateString() : "Never"}</div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
-
-      {tab === "playbook" && (
-        <div style={{padding:24, maxWidth:820, margin:"0 auto"}}>
-          <h2 style={{color:C.orange, marginBottom:8}}>The Seven Virtues</h2>
-          <p style={{color:C.textSub, marginBottom:32}}>Fruit of the Spirit applied to youth sports.</p>
-          {Object.values(VIRTUES).map(t => (
-            <div key={t.key} style={{marginBottom:24, background:"#fff", border:`1px solid ${t.border}`, borderRadius:16, padding:24}}>
-              <div style={{display:"flex", alignItems:"center", gap:16}}>
-                <span style={{fontSize:48}}>{t.icon}</span>
-                <div>
-                  <div style={{fontSize:22, fontWeight:800, color:t.color}}>{t.label}</div>
-                  <div style={{color:C.textSub}}>"{t.tagline}"</div>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {editing && <EditModal person={editing} onSave={saveAthlete} onClose={()=>setEditing(null)} />}
-      {viewing && <PersonDetail person={viewing} onClose={()=>setViewing(null)} onEdit={p=>{setViewing(null); setEditing(p);}} />}
-      {deleteConfirm && <ConfirmDelete name={deleteConfirm.name} onConfirm={()=>deleteAthlete(deleteConfirm.id)} onCancel={()=>setDeleteConfirm(null)} />}
-    </div>
-  );
-}
-
-const root = ReactDOM.createRoot(document.getElementById("root"));
-root.render(React.createElement(App));
 </script>
+
 </body>
 </html>
